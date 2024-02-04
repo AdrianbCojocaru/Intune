@@ -1,11 +1,17 @@
 <#
-.Version 3.0.0
-.Author Adrian
+
+.Version 2.0.0
+
+.Author Adrian Cojocaru
+
 .Synopsis
     Migration script from one tenant to another
+
 .Description
-    Gathers the hardware hash on the device and triggers the Intune wipe action on the device. The script will delete the autopilot hardware hash and the azure ad object on the source tenant.
+    Another script (running on the client device) gathers the serial number, hash and device name of the device that is being migrated. This information is being sent via a webhook.
+    This script checks to see if the device exists in the target tenant, and if it does, it triggers the device wipe and sync. If successful, it deletes the device object from Intune, Windows Autopilot devices and Entra Id. (Source tenant)
     Once all the data has been removed from the source tenant, the script will upload the hardware hash to the target tenant.
+
 #>
 
 Param
@@ -21,12 +27,12 @@ Param
 [string]$DestinationTenantId = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "TenantId" }
 [string]$DestinationApplicationId = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "DW-Automation-CLN-targetappid" }
 [string]$DestinationApplicationSecret = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "DW-Automation-CLN-targetsecret" }
-[string]$DestinationAccountUser = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "DW-Automation-CLN-targetaccuser" }
-[string]$DestinationAccountPass = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "DW-Automation-CLN-targetaccpass" }
-[string]$SASToken = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "AzTablesSASToken" }
-[string]$StorageAccountName = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "StorageAccountName" }
-[string]$AzTableName = 'MigratedDevices'
 
+
+[string]$SASToken = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "AzTablesSASToken" } else { $env:SASToken }
+[string]$StorageAccountName = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { Get-AutomationVariable -Name "StorageAccountName" } else { $env:StorageAccountName }
+[string]$AzTableName = 'MigratedDevices'
+[string]$AzNamingConventionTable = 'NamingConvention'
 #EndRegion -------------------------------------------------- [AzureAD Variables] ----------------------------------------------
 #Region ----------------------------------------------------- [Script Variables] ----------------------------------------------
 [version]$ScriptVersion = [version]'1.0.0'
@@ -119,7 +125,10 @@ function Write-ErrorRunbook {
             else {
                 $ErrorText = "[$LogDateTime] [${CmdletName} Nr. $errNumber] :: $($($_.Exception).Message)`n" + `
                     ">>> Line: $($($_.InvocationInfo).ScriptLineNumber) Char: $($($_.InvocationInfo).OffsetInLine) <<<`n" + `
-                    "$($($_.InvocationInfo).Line)" 
+                    "$($($_.InvocationInfo).Line)"
+                if ($ErrorRecord.ErrorDetails.Message) {
+                    $ErrorText += $ErrorRecord.ErrorDetails.Message
+                }
             }
             $ErrorText | Write-Error
         }
@@ -315,7 +324,7 @@ function Import-WindowsAutopilotDevice {
         #Build a json for the creating of the autopilot device
         $AutopilotDeviceIdentity = [ordered]@{
             '@odata.type'        = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
-            'groupTag'           = 'NO-SWM-OFC'#if ($GroupTag) { "$($GroupTag)" } else { "" }
+            'groupTag'           = 'NO-ORA-OFC'
             'serialNumber'       = $DeviceSerialNumber
             'productKey'         = if ($WindowsProductID) { $WindowsProductID } else { "" }
             'hardwareIdentifier' = $HardwareHash
@@ -332,7 +341,6 @@ function Import-WindowsAutopilotDevice {
             #Getting rid of formatting errors and converting to json
             $body = $($($AutopilotDeviceIdentity | ConvertTo-Json -Compress) -replace "rn", "" -replace " ", "")  
             Write-LogRunbook "Importing $body" -Caller $CmdletName
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
                 
             $url = "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities"
             $response = Invoke-RestMethod -Uri $url -Headers $headers -Body $body -Method Post -ErrorAction Stop
@@ -362,7 +370,7 @@ function Remove-WindowsAutopilotDevice {
         [Parameter(Mandatory = $false, Position = 1, ValueFromPipeline = $true)]
         [ValidateNotNull()]
         [AllowEmptyString()]
-        [string]$DeviceSerialNumber
+        [string]$DeviceSerialNumber = ''
     )
     Begin {
         [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
@@ -374,8 +382,6 @@ function Remove-WindowsAutopilotDevice {
             "Content-type" = "application/json"
         }
         try {
-
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             # get device by serial number    
             $url = "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities?`$filter=contains(serialNumber,'$DeviceSerialNumber')"
             $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
@@ -391,7 +397,8 @@ function Remove-WindowsAutopilotDevice {
                     "StatusCode: $($response.StatusCode) (Expected value for success: 204) StatusDescription: $($response.StatusDescription) (Expected value for success: NoContent) $url" | Write-LogRunbook -Caller $CmdletName
 
                 }
-            } else {
+            }
+            else {
                 Write-LogRunbook "Device not found" -Caller $CmdletName
             }
             #$AutopilotDeviceIdentityResponse = Invoke-RestMethod -Headers @{Authorization = "Bearer $($TargetToken)" } -Uri $url -Method POST -Body $AutopilotDeviceIdentityJSON -ContentType "application/json" -ErrorAction Stop
@@ -409,6 +416,7 @@ function Get-WindowsAutopilotDevice {
 
  .Example
    Get-WindowsAutopilotDevice -Token 'yourGraphToken' -importedWindowsAutopilotDeviceIdentityId '390da3ec-cc71-4544-904c-f851740f01f8'
+   Get-WindowsAutopilotDevice -Token 'yourGraphToken' -DeviceSerialNumber '390da3ec'
 #>
     param (
         [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true)]
@@ -419,7 +427,11 @@ function Get-WindowsAutopilotDevice {
         [ValidateNotNull()]
         [AllowEmptyString()]
         [string]$importedWindowsAutopilotDeviceIdentityId,
-        [Parameter(Mandatory = $false, Position = 2, ValueFromPipeline = $false)]
+        [Parameter(Mandatory = $false, Position = 2, ValueFromPipeline = $true)]
+        [ValidateNotNull()]
+        [AllowEmptyString()]
+        [string]$DeviceSerialNumber,
+        [Parameter(Mandatory = $false, Position = 3, ValueFromPipeline = $false)]
         [ValidateNotNull()]
         [AllowEmptyString()]
         [switch]$HideParams
@@ -434,13 +446,19 @@ function Get-WindowsAutopilotDevice {
             "Content-type" = "application/json"
         }
         try {
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
-                
-            $url = "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importedWindowsAutopilotDeviceIdentityId"
-            $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
-            Write-LogRunbook "ImportState: $($response.state)" -Caller $CmdletName
-            #$AutopilotDeviceIdentityResponse = Invoke-RestMethod -Headers @{Authorization = "Bearer $($TargetToken)" } -Uri $url -Method POST -Body $AutopilotDeviceIdentityJSON -ContentType "application/json" -ErrorAction Stop
-            $response.state
+            if ($DeviceSerialNumber) {    
+                $url = "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities?`$filter=contains(serialNumber,'$DeviceSerialNumber')"
+                $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
+                $response | ConvertTo-Json -Compress | Write-LogRunbook -Caller $CmdletName
+                $response.value
+            }
+            else {
+                $url = "https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/$importedWindowsAutopilotDeviceIdentityId"
+                $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
+                Write-LogRunbook "ImportState: $($response.state)" -Caller $CmdletName
+                #$AutopilotDeviceIdentityResponse = Invoke-RestMethod -Headers @{Authorization = "Bearer $($TargetToken)" } -Uri $url -Method POST -Body $AutopilotDeviceIdentityJSON -ContentType "application/json" -ErrorAction Stop
+                $response.state
+            }
         }
         catch {
             Write-ErrorRunbook
@@ -485,9 +503,8 @@ function Update-WindowsAutopilotDeviceProperties {
             #Getting rid of formatting errors and converting to json
             $body = $body | ConvertTo-Json -Compress
             Write-LogRunbook "Updating $body" -Caller $CmdletName
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             $url = "https://graph.microsoft.com/v1.0/deviceManagement/windowsAutopilotDeviceIdentities/$windowsAutopilotDeviceIdentityId/updateDeviceProperties"     #//updateDeviceProperties"
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -Body $body -Method Post -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -Body $body -Method Post -UseBasicParsing -ErrorAction Stop
             "StatusCode: $($response.StatusCode) (Expected value for success: 204) StatusDescription: $($response.StatusDescription) (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
             #$response
         }
@@ -592,7 +609,7 @@ function ConvertTo-AADDeviceObjectId {
 
  .Example
   Convert-ToAADDeviceObjectId -Token 'yourGraphToken' -IntuneDeviceId $devices[3].DeviceId
-  Convert-ToAADDeviceObjectId -Token 'yourGraphToken' -DeviceName 'IDIDNL17076'
+  Convert-ToAADDeviceObjectId -Token 'yourGraphToken' -DeviceName 'ORAIDIDNL17076'
 #>
     param (
         [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true)]
@@ -687,9 +704,8 @@ function Remove-AADDeviceObject {
     }
     process {
         try {
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             $url = "https://graph.microsoft.com/v1.0/devices/$AzureADDeviceObjectId"
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -Method Delete -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -Method Delete -UseBasicParsing -ErrorAction Stop
             "StatusCode: $($response.StatusCode) (Expected value for success: 204) StatusDescription: $($response.StatusDescription) (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
         }
         catch {
@@ -740,7 +756,6 @@ function Get-IntuneDevcieInfo {
             "Content-type" = "application/json"
         }
         try {
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             if ($IntuneDeviceId) {
                 $url = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$IntuneDeviceId"
             }
@@ -753,7 +768,7 @@ function Get-IntuneDevcieInfo {
             $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -ErrorAction Stop
             if ($DeviceName) {
                 "The request returned $($response.'@odata.count') device(s)." | Write-LogRunbook -Caller $CmdletName
-                if (-not $HideParams) {$response.value | ConvertTo-Json -Compress | Write-LogRunbook -Caller $CmdletName}
+                if (-not $HideParams) { $response.value | ConvertTo-Json -Compress | Write-LogRunbook -Caller $CmdletName }
                 $response.value
             }
             else {
@@ -795,12 +810,11 @@ function Start-IntuneDeviceWipeAndSync {
             "Content-type" = "application/json"
         }
         try {
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             $url = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$IntuneDeviceId/wipe"
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -Body $body -Method Post -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -Body $body -Method Post -UseBasicParsing -ErrorAction Stop
             Write-LogRunbook "Wipe StatusCode: '$($response.StatusCode)' (Expected value for success: 204) Wipe StatusDescription: '$($response.StatusDescription)' (Expected value for success: NoContent)" -Caller $CmdletName
             $url = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/$IntuneDeviceId/syncDevice"
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -Body $body -Method Post -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -Body $body -Method Post -UseBasicParsing -ErrorAction Stop
             Write-LogRunbook "syncDevice StatusCode: '$($response.StatusCode)' (Expected value for success: 204) syncDevice StatusDescription: '$($response.StatusDescription)' (Expected value for success: NoContent)" -Caller $CmdletName
         }
         catch {
@@ -833,16 +847,18 @@ function Start-IntuneAutopilotDevicesSync {
             "Content-type" = "application/json"
         }
         try {
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             $url = "https://graph.microsoft.com/beta/deviceManagement/windowsAutopilotSettings/sync"
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -Method Post -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -Method Post -UseBasicParsing -ErrorAction Stop
             "StatusCode: $($response.StatusCode) (Expected value for success: 204) StatusDescription: $($response.StatusDescription) (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
         }
         catch {
             $CurrentError = $_
-            switch ($_.Exception.Response.StatusCode) {
+            switch ($_.Exception.StatusCode) {
+                'Conflict' {
+                    "<Conflict> StatusCode: '$($($CurrentError.Exception).StatusCode)' (Expected value for success: 204) StatusDescription: '$($($CurrentError.Exception).Message)' (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
+                }
                 'TooManyRequests' {
-                    "StatusCode: '$($($CurrentError.Exception).StatusCode)' (Expected value for success: 204) StatusDescription: '$($($CurrentError.Exception).Message)' (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
+                    "<TooManyRequests> StatusCode: '$($($CurrentError.Exception).StatusCode)' (Expected value for success: 204) StatusDescription: '$($($CurrentError.Exception).Message)' (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
                 }
                 Default {
                     Write-ErrorRunbook
@@ -876,9 +892,8 @@ function Get-WindowsAutopilotSettings {
             "Content-type" = "application/json"
         }
         try {
-            #New-DWLicMNGTLogAnalyticsEvent -Log_Message "Uploading hardware hash to <Destination> tenant for $($ComputerName)" -Severity "Information" -Computer "$($ComputerName)" -Operation "Import"
             $url = "https://graph.microsoft.com/beta/deviceManagement/windowsAutopilotSettings"
-            $response = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri $url -Headers $headers -Method Get -UseBasicParsing -ErrorAction Stop
             #"StatusCode: $($response.StatusCode) (Expected value for success: 204) StatusDescription: $($response.StatusDescription) (Expected value for success: NoContent)" | Write-LogRunbook -Caller $CmdletName
             $response.Content | Write-LogRunbook -Caller $CmdletName
             $response.Content | ConvertFrom-Json
@@ -897,9 +912,244 @@ function Get-WindowsAutopilotSettings {
         }      
     }
 }
+function New-DeviceName {
+    <#
+  .DESCRIPTION
+  Returns the current status of the windowsAutopilotSettings
+
+ .Example
+   Get-WindowsAutopilotSettings -Token 'yourGraphToken'
+#>
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
+        [ValidateNotNull()]
+        [AllowEmptyString()]
+        [pscustomobject]$NamingConvention
+    )
+    Begin {
+        [string]${CmdletName} = $PSCmdlet.MyInvocation.MyCommand.Name
+        if (-not $HideParams) { $PSBoundParameters.GetEnumerator() | Sort-Object -Property Name | ForEach-Object { if ($_.Key -notlike "*token*") { "$($_.Key) = $($_.Value)" | Write-LogRunbook -Caller $CmdletName } } }
+    }
+    End {
+
+        try {
+
+        }
+        catch {
+
+        }      
+    }
+}
 
 #EndRegion -------------------------------------------------- [Functions] ----------------------------------------------
 
 
 #Region -------------------------------------------------------- [Main] ----------------------------------------------
 
+try {  
+    $RequestBody = if ($env:AZUREPS_HOST_ENVIRONMENT -or $PSPrivateMetadata.JobId) { ConvertFrom-Json -InputObject $WebhookData.RequestBody }
+    #Format the input data and post it into the data stream
+    $DeviceHashData = $RequestBody.DeviceHashData 
+    $SerialNumber = $RequestBody.SerialNumber
+    $ProductKey = $RequestBody.ProductKey
+    $GroupTag = $RequestBody.GroupTag
+    $ComputerName = $RequestBody.ComputerName
+
+    $RequestBody | ConvertTo-Json -Compress | Write-LogRunbook -Caller 'Get-DeviceInfoMain'
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: DeviceHashData: $DeviceHashData SerialNumber: $SerialNumber ProductKey: $ProductKey GroupTag: $GroupTag ComputerName: $ComputerName"
+    
+    #Getting rid of formatting errors
+    $DeviceHashData = $DeviceHashData -creplace "rn", "rrnn" -creplace "RN", "RRNN" -creplace "Rn", "RRnn" -creplace "rN", "rrNN"
+    $SerialNumber = $SerialNumber -creplace "rn", "rrnn" -creplace "RN", "RRNN" -creplace "Rn", "RRnn" -creplace "rN", "rrNN"
+    $ProductKey = $ProductKey -creplace "rn", "rrnn" -creplace "RN", "RRNN" -creplace "Rn", "RRnn" -creplace "rN", "rrNN"
+    $GroupTag = $GroupTag -creplace "rn", "rrnn" -creplace "RN", "RRNN" -creplace "Rn", "RRnn" -creplace "rN", "rrNN"
+    $ComputerName = $ComputerName -creplace "rn", "rrnn" -creplace "RN", "RRNN" -creplace "Rn", "RRnn" -creplace "rN", "rrNN"
+    Write-Output "After replace rn: DeviceHashData: $DeviceHashData SerialNumber: $SerialNumber ProductKey: $ProductKey GroupTag: $GroupTag ComputerName: $ComputerName"
+    If ($SerialNumber -and $DeviceHashData) {
+        Write-LogRunbook "Serial and hash was successfully collected for computer $($ComputerName)" -Caller 'Get-DeviceInfoMain'
+    }
+
+    Else {
+        Write-LogRunbook "Serial and hash was not collected for computer $($ComputerName)" -Caller 'Get-DeviceInfoMain'
+        Exit
+    }
+
+    ## Device name check
+    $TargetToken = Get-Token -TenantId $DestinationTenantId -AppId $DestinationApplicationId -AppSecret $DestinationApplicationSecret
+    $DeviceNameObj = Get-AzureTableEntities -StorageAccountName $StorageAccountName -TableName $AzTableName -filter "RowKey%20eq%20'$ComputerName'" #moved up
+    $NamingConventionOjb = Get-AzureTableEntities -StorageAccountName $StorageAccountName -TableName $AzNamingConventionTable
+    if (-not $DeviceNameObj) { throw [CustomException]::new( "Get-DeviceName", "Entry with RowKey '$ComputerName' was not found in table '$AzTableName'") }
+    #####################################################################
+    #####################################################################
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: Source tenant: '$SourceTenantId'"
+    $SourceToken = Get-Token -TenantId $SourceTenantId -AppId $SourceApplicationId -AppSecret $SourceApplicationSecret
+    $IntuneDeviceInfo = Get-IntuneDevcieInfo -Token $SourceToken -DeviceName $ComputerName #'us-467995179101'
+    if (-not $IntuneDeviceInfo) { throw [CustomException]::new( "Get-IntuneDevcieInfoMain", "No device found for $ComputerName") }
+
+   # start device wipe and sync for each intune entry matching the device info
+    $IntuneDeviceInfo | ForEach-Object {
+        [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+        Write-Output "[$OutDateTime] :: Intune device found: IntuenDeviceId '$($_.id)' AzureADDeviceId '$($_.azureADDeviceId)' DeviceName '$($_.deviceName)'."
+        Write-Output "[$OutDateTime] :: DeviceEnrollmentType: '$($_.deviceEnrollmentType)' DevcieManagementAgent: '$($_.managementAgent)'."
+        if ($_.deviceEnrollmentType -eq "windowsCoManagement" -and $_.managementAgent -eq "configurationManagerClientMdm") {
+            Write-Output "[$OutDateTime] :: This is an Hybrid Azure AD Joined or co-managed device."
+        }
+        Write-Output "[$OutDateTime] :: Starting device wipe..."
+        Start-IntuneDeviceWipeAndSync -Token $SourceToken -IntuneDeviceId $_.id
+        
+        # Wait until the device is removed from Intune for SourceTenantId
+        $IntuneDeviceInfoCheck = Get-IntuneDevcieInfo -Token $SourceToken -IntuneDeviceId $_.id #'us-467995179101'
+        While ($IntuneDeviceInfoCheck) {
+            if ($Global:CheckCount -gt $Global:CheckCountLimit) { throw [CustomException]::new( "Get-IntuneDevcieInfoMain", "Retry count limit reached:$Global:CheckCount. Intune device still exists. Id:'$($_.id)'") }
+            Start-Sleep -Seconds 90
+            $Global:CheckCount++
+            Write-LogRunbook "Intune device still exists: IntuenDeviceId '$($_.id)' AzureADDeviceId '$($_.azureADDeviceId)'" -Caller 'Get-IntuneDevcieInfoMain'
+            $IntuneDeviceInfoCheck = Get-IntuneDevcieInfo -Token $SourceToken -IntuneDeviceId $_.id -HideParams #'us-467995179101'
+        }
+        [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+        Write-Output "[$OutDateTime] :: This device was removed from Intune. It is currently being wiped."
+
+        # Remove the device from Windows Autopilot devices if exists. In some cases Hybrid joined devices were also imported to Intune Autopilot.
+        if (Get-WindowsAutopilotDevice -Token $SourceToken -DeviceSerialNumber $SerialNumber) {
+            [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+            Write-Output "[$OutDateTime] :: Device found in Windows Autopilot Devices for tenant '$SourceTenantId'. Removing Autopilot device..."
+            Remove-WindowsAutopilotDevice -Token $SourceToken -DeviceSerialNumber $SerialNumber
+        } else {
+            [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+            Write-Output "[$OutDateTime] :: Device was not found in Windows Autopilot Devices for tenant '$SourceTenantId'."
+        }
+
+        # Run Windows Autopilot devices Sync if it is not already running. Wait until the sync finishes regardless of who started it.
+        Write-Output "[$OutDateTime] :: Run Windows Autopilot devices Sync if it is not already running. Wait until the sync finishes regardless of who started it."
+        try {
+            $AutopilotSettingsState = Get-WindowsAutopilotSettings -Token $SourceToken
+            $AutopilotSettingsStateJson = $AutopilotSettingsState | ConvertTo-Json -Compress
+            [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+            if ($AutopilotSettingsState.syncStatus -ne 'completed') {
+                Write-Output "[$OutDateTime] :: IntuneAutopilotDevicesSync will not run. Current state: $AutopilotSettingsStateJson"
+            }
+            else {
+                Write-Output "[$OutDateTime] :: Running IntuneAutopilotDevicesSync. Current state: $AutopilotSettingsStateJson"
+                Start-IntuneAutopilotDevicesSync -Token $SourceToken # check if this is actually needed....
+            }
+            $AutopilotSettingsState = Get-WindowsAutopilotSettings -Token $SourceToken
+            while (($AutopilotSettingsState.syncStatus -eq 'inProgress') -and ($Global:CheckCount -le $Global:CheckCountLimit)) {
+                #if ($Global:CheckCount -gt $Global:CheckCountLimit) { throw [CustomException]::new( "Start-IntuneAutopilotDevicesSyncMain", "Retry count limit reached:$Global:CheckCount. Autopilot sync not done") } c# not vital if sync not done, just continue
+                Start-Sleep -Seconds 15
+                $Global:CheckCount++
+                $AutopilotSettingsState = Get-WindowsAutopilotSettings -Token $SourceToken
+                Write-LogRunbook "Sync in progress for $SourceTenantId" -Caller 'Get-WindowsAutopilotSettingsMain'
+            }
+        }
+        catch {
+            switch ($_.Exception.Message) {
+                'Start-IntuneAutopilotDevicesSync' { Write-Output "Start-IntuneAutopilotDevicesSync error caught: $($($_.Exception).additionalData)"; Write-Output $Error[-1] }
+                Default { Write-Output "Start-IntuneAutopilotDevicesSync other error caught."; Write-Output $Error[-1] }
+            }
+        }
+        Start-Sleep -Seconds 5
+        if ($AutopilotSettingsState.syncStatus -ne 'completed') {
+            $AutopilotSettingsStateJson = $AutopilotSettingsState | ConvertTo-Json -Compress
+            throw [CustomException]::new( "Start-IntuneAutopilotDevicesSyncStatus", "There was a problem with the intune Windows Autopilot devices sync. CheckCount: [$CheckCount] $AutopilotSettingsStateJson")  # maybe should be no error here, just continue. test with throw for now
+        }
+        Write-LogRunbook "Sync FINISHED for $SourceTenantId. Status = $($AutopilotSettingsState.syncStatus)" -Caller 'Get-WindowsAutopilotSettingsMain'
+        [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+        Write-Output "[$OutDateTime] :: Sync FINISHED for $SourceTenantId. Status = $($AutopilotSettingsState.syncStatus)"
+        Write-Output "[$OutDateTime] :: Removing device object from Azure."
+        
+        # remove device from Azure
+        ConvertTo-AADDeviceObjectId -Token $SourceToken -AzureAdDeviceId $_.azureADDeviceId | Remove-AADDeviceObject -Token $SourceTokenAAD
+    }
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: All done for Source Tenant Id: $SourceTenantId."
+
+    #########################################################################
+    # Target Tenant
+    #########################################################################
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: Target tenant: $DestinationTenantId"
+    $TargetToken = Get-Token -TenantId $DestinationTenantId -AppId $DestinationApplicationId -AppSecret $DestinationApplicationSecret
+    # import device to target tenant autopilot
+    $DeviceNameObj | ConvertTo-Json -Compress | Write-Output
+    if (Get-WindowsAutopilotDevice -Token $TargetToken -DeviceSerialNumber $SerialNumber) {
+        Write-LogRunbook "The device with serial number '$SerialNumber' already exists in WindowsAutopilot for tenant '$DestinationTenantId'" -Caller 'Get-WindowsAutopilotDeviceMain'
+        [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+        Write-Output "[$OutDateTime] :: The device with serial number '$SerialNumber' already exists in '$DestinationTenantId'"
+    }
+    else {
+        [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+        Write-Output "[$OutDateTime] :: The device with serial number '$SerialNumber' does not exist in WindowsAutopilot for tenant '$DestinationTenantId'. Importing..."
+        $ImportId = Import-WindowsAutopilotDevice -Token $TargetToken -DeviceSerialNumber $SerialNumber -WindowsProductID $ProductKey -HardwareHash $DeviceHashData
+        $ImportState = Get-WindowsAutopilotDevice -Token $TargetToken -importedWindowsAutopilotDeviceIdentityId $ImportId
+        # to import a device to source tenant, use below
+        #$ImportId = Import-WindowsAutopilotDevice -Token $SourceToken -DeviceSerialNumber $SerialNumber -WindowsProductID $ProductKey -HardwareHash $DeviceHashData
+        #$ImportState = Get-WindowsAutopilotDevice -Token $SourceToken -importedWindowsAutopilotDeviceIdentityId $ImportId
+    
+        # Check if the Windows Autopilot device import went ok
+        while (($ImportState.deviceImportStatus -eq 'unknown') -and ($Global:CheckCount -le $Global:CheckCountLimit)) {
+            Start-Sleep -Seconds 9
+            $Global:CheckCount++
+            $ImportState = Get-WindowsAutopilotDevice -Token $TargetToken -importedWindowsAutopilotDeviceIdentityId $ImportId -HideParams
+            Write-LogRunbook "Import in progress in progress for $DestinationTenantId" -Caller 'Get-WindowsAutopilotDeviceMain'
+        }
+        if ($ImportState.deviceErrorCode -ne 0) {
+            $ImportStateJson = $ImportState | ConvertTo-Json -Compress
+            if ([string]::IsNullOrWhitespace($ImportState.deviceRegistrationId)) { throw [CustomException]::new( "Get-WindowsAutopilotDeviceMain", "There was an issue importing this device CheckCount: [$CheckCount]. $ImportStateJson") }
+            throw [CustomException]::new( "Get-WindowsAutopilotDeviceMain", "There was a problem importing the autopilot data for this device. $ImportStateJson") 
+        }
+    }
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: Import-WindowsAutopilotDevice done."
+
+    # Update device name
+    Update-WindowsAutopilotDeviceProperties -Token $TargetToken -windowsAutopilotDeviceIdentityId $ImportState.deviceRegistrationId -DeviceName $DeviceNameObj.PartitionKey
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: Update-WindowsAutopilotDeviceProperties done."
+    Write-Output "[$OutDateTime] :: Start-IntuneAutopilotDevicesSyncMain"
+    try {
+        $AutopilotSettingsState = Get-WindowsAutopilotSettings -Token $TargetToken
+        $AutopilotSettingsStateJson = $AutopilotSettingsState | ConvertTo-Json -Compress
+        [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+        if ($AutopilotSettingsState.syncStatus -ne 'completed') {
+            Write-Output "[$OutDateTime] :: IntuneAutopilotDevicesSync will not run. Current state: $AutopilotSettingsStateJson"
+        }
+        else {
+            Write-Output "[$OutDateTime] :: Running IntuneAutopilotDevicesSync. Current state: $AutopilotSettingsStateJson"
+            Start-IntuneAutopilotDevicesSync -Token $TargetToken # check if this is actually needed....
+        }
+    }
+    catch {
+        switch ($_.Exception.Message) {
+            'Start-IntuneAutopilotDevicesSync' { Write-Output "Start-IntuneAutopilotDevicesSync error caught: $($($_.Exception).additionalData)"; Write-Output $Error[-1] }
+            Default { Write-Output "Start-IntuneAutopilotDevicesSync other error caught."; Write-Output $_] }
+        }
+    }
+    $AutopilotSettingsState = Get-WindowsAutopilotSettings -Token $TargetToken
+    while (($AutopilotSettingsState.syncStatus -eq 'inProgress') -and ($Global:CheckCount -le $Global:CheckCountLimit)) {
+        Start-Sleep -Seconds 15
+        $Global:CheckCount++
+        $AutopilotSettingsState = Get-WindowsAutopilotSettings -Token $TargetToken
+    }
+    if ($AutopilotSettingsState.syncStatus -ne 'completed') {
+        $AutopilotSettingsStateJson = $AutopilotSettingsState | ConvertTo-Json -Compress
+        throw [CustomException]::new( "Start-IntuneAutopilotDevicesSyncStatus", "There was a problem with the intune Windows Autopilot devices sync. $AutopilotSettingsStateJson") 
+    }
+    Start-Sleep -Seconds 90
+    Write-LogRunbook "Sync FINISHED for $SourceTenantId. Status = $($AutopilotSettingsState.syncStatus)" -Caller 'Get-WindowsAutopilotSettingsMain'
+    [string]$OutDateTime = (Get-Date -Format 'MM-dd-yyyy HH\:mm\:ss.fff').ToString()
+    Write-Output "[$OutDateTime] :: Sync FINISHED for $SourceTenantId. Status = $($AutopilotSettingsState.syncStatus)"
+}
+catch {
+    switch ($_.Exception.Message) {
+        'Get-ErrorOne' { $Global:ExitCode = 101 }
+        'Get-ErrorTwo' { $Global:ExitCode = 102 }
+        Default { $Global:ExitCode = 300 }
+    }
+    Write-ErrorRunbook
+}
+finally {
+    if ($Global:ExitCode -ne 0) { throw $_ }
+    Write-LogRunbook "Execution completed with exit code: $Global:ExitCode" -Caller 'Info-End'
+}
