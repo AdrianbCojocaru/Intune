@@ -4,5 +4,11 @@
 		"CompliancePolicyName":"[PROD] Global Windows Latest Build Compliance Policy",
 		"CompliancePolicyId":"ba20c69a-0e9b-49b2-b8a1-4f7e7a385278",
 		"AzureTableName":"CPba20c69a0e9b49b2b8a14f7e7a385278"
+    },
+    {
+		"Creator":"Adrian Cojocaru",
+		"CompliancePolicyName":"[PROD] Global Google Chrome Compliance Policy",
+		"CompliancePolicyId":"3a50a949-b8b9-43a4-9a38-91d20d2cedb8",
+		"AzureTableName":"CP3a50a949-b8b9-43a4-9a38-91d20d2cedb8"
     }
 ]
