@@ -5,7 +5,7 @@
 .Author Adrian Cojocaru
 
 .Synopsis
-    Write bulk Group Tags
+    Write bulk group tags for Windows Autopilot devices
 
 .Description
     Get a *.csv file as input.
