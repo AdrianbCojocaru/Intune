@@ -5,10 +5,10 @@
 .Author Adrian Cojocaru
 
 .Synopsis
-    Write bulk group tags for Windows Autopilot devices
+    Write bulk group tags for Windows Autopilot devices.
 
 .Description
-    Get a *.csv file as input.
+    Takes a *.csv file as input either from a blob container or local drive.
     SerialNumber | GroupTag
     5CG2076CJL | US-STFN-L
     For each serial number in the *.csv file, the coresponding group tag will be written in the Windows Autopilot device object properties
