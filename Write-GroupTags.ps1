@@ -9,6 +9,7 @@
 
 .Description
     Takes a *.csv file as input either from a blob container or local drive.
+    Mandatory columns:
     SerialNumber | GroupTag
     5CG2076CJL | US-STFN-L
     For each serial number in the *.csv file, the coresponding group tag will be written in the Windows Autopilot device object properties
