@@ -12,7 +12,7 @@
     Mandatory CSV columns:
     SerialNumber | GroupTag
     5CG2076CJL | US-STFN-L
-    For each serial number in the *.csv file, the coresponding group tag will be written in the Windows Autopilot device object properties
+    For each serial number in the csv file, the coresponding group tag will be written in the Windows Autopilot device object properties
 
 #>
 
