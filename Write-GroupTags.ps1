@@ -8,7 +8,7 @@
     Write bulk group tags for Windows Autopilot devices.
 
 .Description
-    Takes a *.csv file as input either from a blob container or local drive.
+    Takes a *.csv file as input either from a blob container or local drive
     Mandatory CSV columns:
     SerialNumber | GroupTag
     5CG2076CJL | US-STFN-L
