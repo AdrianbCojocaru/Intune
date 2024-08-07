@@ -129,7 +129,7 @@ function Get-Token {
   .DESCRIPTION
   Get Authentication token from Microsoft Graph (default) or Threat Protection.
   Authentication can be done with a Certificate  Thumbprint (default) or ApplicationId Id & ApplicationSecret.
-  $Thumbprint variable needs to be initialized before calling the function
+  $Thumbprint variable needs to be initialized before calling the function.
   For ApplicationId & ApplicationSecret the $ApplicationId & $ApplicationSecret variables need to be initialized before calling the function.
  .Example
    Get a token for Graph using certificate thumbprint (default behaviour)
