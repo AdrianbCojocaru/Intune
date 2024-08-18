@@ -220,7 +220,7 @@ function Get-WindowsAutopilotDevice {
 
  .Example
    Get-WindowsAutopilotDevice -Token 'yourGraphToken' -importedWindowsAutopilotDeviceIdentityId '390da3ec-cc71-4544-904c-f851740f01f8'
-   Get-WindowsAutopilotDevice -Token 'yourGraphToken' -DeviceSerialNumber '390dao3ec'
+   Get-WindowsAutopilotDevice -Token 'yourGraphToken' -DeviceSerialNumber '390daox3ec'
 #>
     param (
         [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true)]
