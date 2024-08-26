@@ -292,7 +292,7 @@ function Get-WindowsAutopilotDevice {
 function Update-WindowsAutopilotDeviceProperties {
     <#
   .DESCRIPTION
-  Updates properties for an Autopilot device
+  Updates properties for an Autopilot device.
 
  .Example
    Update-WindowsAutopilotDeviceProperties -Token 'yourGraphToken' -windowsAutopilotDeviceIdentityId 'f75bbc93-9f55-4b74-abe2-7f01d6101b43' -DeviceName 'AdiCojoVM10'
