@@ -216,7 +216,7 @@ function Get-Token {
 function Get-WindowsAutopilotDevice {
     <#
   .DESCRIPTION
-  Gets the information about an imported Windows Autopilot Device IdentityId
+  Gets the information about an imported Windows Autopilot Device IdentityId.
 
  .Example
    Get-WindowsAutopilotDevice -Token 'yourGraphToken' -importedWindowsAutopilotDeviceIdentityId '390da3ec-cc71-4544-904c-f851740f01f8'
