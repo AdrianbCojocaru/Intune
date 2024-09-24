@@ -16,7 +16,7 @@
   Check if the devices inside a CSV file are part of certain AzureAD groups defined in the $groupsToCheck Array.
   This check can be done via Intune ID (precise but slower) or Device Name (faster but less precise).
   The CSV should have a column called DeviceName or DeviceId depending what we are looking for.
-  This CSV can come Intune from exports of Proactive Remediation, Compliance policy reports etc.
+  This CSV can come Intune from exports of Proactive Remediation, Compliance policy reports etc..
 
   .PARAMETER DevicesCSV
   The path to the CSV file containing the name of the device
