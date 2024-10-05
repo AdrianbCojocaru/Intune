@@ -10,7 +10,7 @@
 
 <#
   .SYNOPSIS
-  Check if the devices are part of certain AAD groups via their Intune IDs or DeviceName
+  Check if the devices are part of certain AAD groups via their Intune IDs or DeviceName.
 
   .DESCRIPTION
   Check if the devices inside a CSV file are part of certain AzureAD groups defined in the $groupsToCheck Array.
